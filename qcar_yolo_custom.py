@@ -73,6 +73,8 @@ calibrationPose = [0, 2, -np.pi / 2]
 # Used to enable safe keyboard triggered shutdown
 global KILL_THREAD
 KILL_THREAD = False
+global current_x, current_y
+current_x, current_y = 0.0, 0.0
 
 
 def sig_handler(*args):
@@ -151,7 +153,7 @@ class SteeringController:
 
 # region : Vehicle Control Loop (Runs in Background Thread)
 def controlLoop():
-    global KILL_THREAD
+    global KILL_THREAD, current_x, current_y
     u = 0
     delta = 0
 
@@ -187,6 +189,7 @@ def controlLoop():
                 x = ekf.x_hat[0, 0]
                 y = ekf.x_hat[1, 0]
                 th = ekf.x_hat[2, 0]
+                current_x, current_y = x, y
                 p = np.array([x, y]) + np.array([np.cos(th), np.sin(th)]) * 0.2
             v = qcar.motorTach
 
@@ -285,7 +288,12 @@ if __name__ == "__main__":
                 msSleepTime = max(1, int(1000 * sleepTime))
 
                 # WaitKey handles the image updating and loop delay
-                cv2.waitKey(msSleepTime)
+                # WaitKey handles the image updating and loop delay
+                key = cv2.waitKey(msSleepTime) & 0xFF
+                if key == ord("p"):
+                    print(
+                        f"[INFO] Current QCar Coordinates -> X: {current_x:.3f}, Y: {current_y:.3f}"
+                    )
 
     except KeyboardInterrupt:
         print("\n[INFO] User interrupted! Shutting down...")
