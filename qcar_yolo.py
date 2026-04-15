@@ -239,46 +239,73 @@ if __name__ == "__main__":
     print("Experiment started. Press Ctrl+C in terminal to stop.")
     try:
         # Main Vision Loop
-        print("Vision loop started. FPS will print to terminal.")
-        # Main Vision Loop
         while controlThread.is_alive() and (not KILL_THREAD):
-            start_time = time.time()
+            start = time.time()
 
-            # 1. Read and Resize
+            # Read Images
             QCarImg.read()
-            shared_rgb = cv2.resize(QCarImg.rgb, (imageWidth, imageHeight))
 
-            # 2. Run Inferences (using .net.predict for speed)
-            pred_cones = cone_yolo.net.predict(
-                shared_rgb, conf=0.3, half=True, verbose=False
+            # --- Process with Model 1 (Cones) ---
+            rgbProcessed_cones = cone_yolo.pre_process(QCarImg.rgb)
+            prediction_cones = cone_yolo.predict(
+                inputImg=rgbProcessed_cones,
+                classes=[0],
+                confidence=0.9,
+                half=True,
+                verbose=False,
             )
-            pred_seg = seg_yolo.net.predict(
-                shared_rgb, classes=[2, 9, 11, 33], conf=0.3, half=True, verbose=False
+            results_cones = cone_yolo.post_processing(
+                alignedDepth=QCarImg.depth, clippingDistance=5
             )
 
-            # 3. FAST DATA EXTRACTION
-            # We combine both result sets to look at the data
-            for results in [pred_cones[0], pred_seg[0]]:
-                if results.boxes:
-                    for i in range(len(results.boxes)):
-                        class_id = int(results.boxes.cls[i])
-                        name = results.names[class_id]
-                        conf = float(results.boxes.conf[i])
+            # --- Process with Model 2 (General Seg) ---
+            rgbProcessed_seg = seg_yolo.pre_process(QCarImg.rgb)
+            prediction_seg = seg_yolo.predict(
+                inputImg=rgbProcessed_seg,
+                classes=[2, 9, 11, 33],
+                confidence=0.3,
+                half=True,
+                verbose=False,
+            )
+            results_seg = seg_yolo.post_processing(
+                alignedDepth=QCarImg.depth, clippingDistance=5
+            )
 
-                        # Note: Calculating distance requires depth alignment logic
-                        # which is slower. For pure FPS testing, we'll just print name/conf.
-                        print(f"Found: {name} | Conf: {conf:.2f}")
+            # --- Combine Results ---
+            all_detected_objects = results_cones + results_seg
 
-            # 4. Calculate FPS
-            dt = time.time() - start_time
-            fps = 1.0 / dt if dt > 0 else 0
+            # Print Detections (Logging objects from both models)
+            for obj in all_detected_objects:
+                print(obj.__dict__)
 
-            # Use '\r' so it updates on one line instead of flooding the screen
-            print(f"--- FPS: {fps:.2f} | Latency: {dt*1000:.1f}ms ---", end="\r")
+            # Render and Show Image
+            # Note: This renders annotations from the General Seg model for visualization.
+            # To view both sets of annotations on the same frame, you would need to
+            # bypass the built-in wrapper and use OpenCV to draw the combined 'all_detected_objects'.
+            # 1. Generate the fully annotated image for both models
+            # We turn off FPS on the first one so they don't overlap and look messy
+            annotated_seg = seg_yolo.post_process_render(showFPS=False)
+            annotated_cone = cone_yolo.post_process_render(showFPS=True)
 
-            # Shortest possible wait to keep loop alive
-            if cv2.waitKey(1) & 0xFF == ord("q"):
-                break
+            # 2. Blend them together
+            # 0.5 and 0.5 means a 50/50 split.
+            # This will make the masks from both models visible simultaneously.
+            combinedImg = cv2.addWeighted(annotated_seg, 0.5, annotated_cone, 0.5, 0)
+
+            # 3. Show the result
+            cv2.imshow("Object Segmentation", combinedImg)
+
+            # Timing & Sleep logic
+            end = time.time()
+            computationTime = end - start
+            sleepTime = sampleTime - (computationTime % sampleTime)
+
+            msSleepTime = int(1000 * sleepTime)
+            if msSleepTime <= 0:
+                msSleepTime = 1
+
+            # WaitKey handles the image updating and loop delay
+            cv2.waitKey(msSleepTime)
 
     except KeyboardInterrupt:
         print("\n[INFO] User interrupted! Shutting down...")
