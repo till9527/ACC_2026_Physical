@@ -206,6 +206,41 @@ def controlLoop():
 
 
 # endregion
+def is_orange(image, box_xyxy):
+    """
+    Checks if a bounding box area contains the specific crimson-red
+    (RGB: 200, 61, 79) of the lab traffic cones.
+    """
+    x1, y1, x2, y2 = map(int, box_xyxy)
+
+    # Bound coordinates to image size to prevent crashes
+    h, w = image.shape[:2]
+    x1, y1 = max(0, x1), max(0, y1)
+    x2, y2 = min(w, x2), min(h, y2)
+
+    # Extract the Region of Interest (ROI)
+    roi = image[y1:y2, x1:x2]
+    if roi.size == 0:
+        return False
+
+    # Convert to HSV
+    hsv_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+
+    # --- HYPER-SPECIFIC CRIMSON BOUNDS ---
+    # The target RGB translates to an HSV of approx [172, 177, 200].
+    # We build a tight window around this exact value to avoid other red objects.
+    lower_crimson = np.array([165, 130, 150])
+    upper_crimson = np.array([179, 220, 255])
+
+    mask = cv2.inRange(hsv_roi, lower_crimson, upper_crimson)
+
+    # Calculate ratio of target pixels vs total pixels in the box
+    target_pixels = cv2.countNonZero(mask)
+    total_pixels = roi.shape[0] * roi.shape[1]
+
+    # Require at least 15% of the bounding box to be this exact crimson
+    return (total_pixels > 0) and ((target_pixels / total_pixels) > 0.15)
+
 
 # -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
 
@@ -246,17 +281,47 @@ if __name__ == "__main__":
             QCarImg.read()
 
             # --- Process with Model 1 (Cones) ---
+            # --- Process with Model 1 (Cones) ---
+            # --- Process with Model 1 (Cones) ---
+            # --- Process with Model 1 (Cones) ---
             rgbProcessed_cones = cone_yolo.pre_process(QCarImg.rgb)
             prediction_cones = cone_yolo.predict(
                 inputImg=rgbProcessed_cones,
                 classes=[0],
-                confidence=0.9,
+                confidence=0.05,
                 half=True,
                 verbose=False,
             )
-            results_cones = cone_yolo.post_processing(
+
+            # Safely grab the raw YOLO results object
+            res = (
+                prediction_cones[0]
+                if isinstance(prediction_cones, list)
+                else prediction_cones
+            )
+
+            # Let Quanser calculate the depth for all detections first
+            raw_results_cones = cone_yolo.post_processing(
                 alignedDepth=QCarImg.depth, clippingDistance=5
             )
+
+            keep_indices = []
+            filtered_res = None
+            results_cones = []
+
+            # 1. Identify which bounding boxes are actually orange
+            if res is not None and res.boxes is not None and len(res.boxes) > 0:
+                for i, box in enumerate(res.boxes.xyxy.cpu().numpy()):
+                    if is_orange(rgbProcessed_cones, box):
+                        keep_indices.append(i)
+
+                # 2. Slice the YOLO results to keep only orange cones for drawing
+                filtered_res = res[keep_indices]
+
+                # 3. Filter the Quanser data objects for the terminal flood
+                for i in keep_indices:
+                    if i < len(raw_results_cones):
+                        results_cones.append(raw_results_cones[i])
 
             # --- Process with Model 2 (General Seg) ---
             rgbProcessed_seg = seg_yolo.pre_process(QCarImg.rgb)
@@ -278,19 +343,15 @@ if __name__ == "__main__":
             for obj in all_detected_objects:
                 print(obj.__dict__)
 
-            # Render and Show Image
-            # Note: This renders annotations from the General Seg model for visualization.
-            # To view both sets of annotations on the same frame, you would need to
-            # bypass the built-in wrapper and use OpenCV to draw the combined 'all_detected_objects'.
-            # 1. Generate the fully annotated image for both models
-            # We turn off FPS on the first one so they don't overlap and look messy
-            annotated_seg = seg_yolo.post_process_render(showFPS=False)
-            annotated_cone = cone_yolo.post_process_render(showFPS=True)
+            # --- High-Speed Rendering ---
+            # 1. Generate the base annotated image from the general segmentation model
+            # We leave showFPS=True here so Quanser handles the framerate text
+            combinedImg = seg_yolo.post_process_render(showFPS=True)
 
-            # 2. Blend them together
-            # 0.5 and 0.5 means a 50/50 split.
-            # This will make the masks from both models visible simultaneously.
-            combinedImg = cv2.addWeighted(annotated_seg, 0.5, annotated_cone, 0.5, 0)
+            # 2. Draw the verified orange cones directly on top using Ultralytics
+            # This completely bypasses the Quanser tensor error and avoids image dimming!
+            if filtered_res is not None and len(filtered_res) > 0:
+                combinedImg = filtered_res.plot(img=combinedImg)
 
             # 3. Show the result
             cv2.imshow("Object Segmentation", combinedImg)
