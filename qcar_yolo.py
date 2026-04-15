@@ -253,7 +253,7 @@ if __name__ == "__main__":
                 shared_rgb, conf=0.3, half=True, verbose=False
             )
             pred_seg = seg_yolo.net.predict(
-                shared_rgb, conf=0.3, half=True, verbose=False
+                shared_rgb, classes=[2, 9, 11, 33], conf=0.3, half=True, verbose=False
             )
 
             # 3. FAST DATA EXTRACTION
