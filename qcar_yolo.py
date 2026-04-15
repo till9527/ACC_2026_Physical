@@ -5,7 +5,7 @@
 qcar_yolo_control.py
 
 Combined script: Runs QCar speed & steering control in a background thread
-while running YOLOv8 object segmentation in the main thread.
+while running two YOLOv8 object segmentation models concurrently in the main thread.
 """
 import os
 import signal
@@ -212,17 +212,26 @@ def controlLoop():
 # region : Setup and Run Experiment (Main Thread)
 if __name__ == "__main__":
 
-    # 1. Initialize YOLOv8 and Camera Stream FIRST
-    print("Loading YOLO model and warming up TensorRT... please wait.")
-    myYolo = YOLOv8(
-        #modelPath='best.pt', 
+    # 1. Initialize YOLOv8 Models and Camera Stream FIRST
+    print("Loading YOLO models and warming up TensorRT... please wait.")
+
+    # Load Model 1 (Traffic Cones)
+    cone_yolo = YOLOv8(
+        modelPath="traffic_cones.pt",
         imageHeight=imageHeight,
         imageWidth=imageWidth,
     )
+
+    # Load Model 2 (General Segmentation)
+    seg_yolo = YOLOv8(
+        modelPath="yolov8s-seg.pt",
+        imageHeight=imageHeight,
+        imageWidth=imageWidth,
+    )
+
     QCarImg = QCar2DepthAligned()
 
     # 2. START VEHICLE CONTROL THREAD SECOND
-    # Now that the heavy AI lifting is done, it is safe to connect to the real-time GPS
     print("Starting QCar hardware and GPS connection...")
     controlThread = Thread(target=controlLoop)
     controlThread.start()
@@ -230,46 +239,46 @@ if __name__ == "__main__":
     print("Experiment started. Press Ctrl+C in terminal to stop.")
     try:
         # Main Vision Loop
+        print("Vision loop started. FPS will print to terminal.")
+        # Main Vision Loop
         while controlThread.is_alive() and (not KILL_THREAD):
-            start = time.time()
+            start_time = time.time()
 
-            # Read Images
+            # 1. Read and Resize
             QCarImg.read()
+            shared_rgb = cv2.resize(QCarImg.rgb, (imageWidth, imageHeight))
 
-            # YOLO Pre-processing & Prediction
-            rgbProcessed = myYolo.pre_process(QCarImg.rgb)
-            prediction = myYolo.predict(
-                inputImg=rgbProcessed,
-                classes=[2, 9, 11],
-                confidence=0.3,
-                half=True,
-                verbose=False,
+            # 2. Run Inferences (using .net.predict for speed)
+            pred_cones = cone_yolo.net.predict(
+                shared_rgb, conf=0.3, half=True, verbose=False
+            )
+            pred_seg = seg_yolo.net.predict(
+                shared_rgb, conf=0.3, half=True, verbose=False
             )
 
-            # Post-processing
-            processedResults = myYolo.post_processing(
-                alignedDepth=QCarImg.depth, clippingDistance=5
-            )
+            # 3. FAST DATA EXTRACTION
+            # We combine both result sets to look at the data
+            for results in [pred_cones[0], pred_seg[0]]:
+                if results.boxes:
+                    for i in range(len(results.boxes)):
+                        class_id = int(results.boxes.cls[i])
+                        name = results.names[class_id]
+                        conf = float(results.boxes.conf[i])
 
-            # Print Detections (optional, can be commented out to reduce terminal clutter)
-            for obj in processedResults:
-                print(obj.__dict__)
+                        # Note: Calculating distance requires depth alignment logic
+                        # which is slower. For pure FPS testing, we'll just print name/conf.
+                        print(f"Found: {name} | Conf: {conf:.2f}")
 
-            # Render and Show Image
-            annotatedImg = myYolo.post_process_render(showFPS=True)
-            cv2.imshow("Object Segmentation", annotatedImg)
+            # 4. Calculate FPS
+            dt = time.time() - start_time
+            fps = 1.0 / dt if dt > 0 else 0
 
-            # Timing & Sleep logic
-            end = time.time()
-            computationTime = end - start
-            sleepTime = sampleTime - (computationTime % sampleTime)
+            # Use '\r' so it updates on one line instead of flooding the screen
+            print(f"--- FPS: {fps:.2f} | Latency: {dt*1000:.1f}ms ---", end="\r")
 
-            msSleepTime = int(1000 * sleepTime)
-            if msSleepTime <= 0:
-                msSleepTime = 1
-
-            # WaitKey handles the image updating and loop delay
-            cv2.waitKey(msSleepTime)
+            # Shortest possible wait to keep loop alive
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                break
 
     except KeyboardInterrupt:
         print("\n[INFO] User interrupted! Shutting down...")
