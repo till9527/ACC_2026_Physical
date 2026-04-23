@@ -23,6 +23,7 @@ from pal.utilities.math import wrap_to_pi
 from hal.content.qcar_functions import QCarEKF
 from hal.products.mats import SDCSRoadMap
 import pal.resources.images as images
+from custom_roadmap import CustomRoadMap
 
 
 # ================ Experiment Configuration ================
@@ -72,7 +73,7 @@ nodeSequence = [
 
 # region : Initial setup
 if enableSteeringControl:
-    roadmap = SDCSRoadMap(leftHandTraffic=False)
+    roadmap = CustomRoadMap()
     waypointSequence = roadmap.generate_path(nodeSequence)
     initialPose = roadmap.get_node_pose(nodeSequence[0]).squeeze()
 else:

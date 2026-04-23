@@ -2,9 +2,21 @@ import numpy as np
 from hal.utilities.path_planning import RoadMap
 
 # ==========================================
+# SCALING FACTOR - single source of truth
+# Node positions and non-zero radii are multiplied by this factor.
+# ==========================================
+SCALE_FACTOR = 1.0
+
+# ==========================================
+# TRANSLATION OFFSET - move the roadmap without changing its shape
+# ==========================================
+X_OFFSET = 0.25
+Y_OFFSET = -0.15
+
+# ==========================================
 # CALIBRATED NODE COORDINATES (from new code)
 # ==========================================
-NODE_DATA = {
+NODE_DATA_BASE = {
     0: (0.0045, 0.1974, -90),
     1: (0.2845, -0.2273, 90),
     2: (0.8292, -1.0627, 0),
@@ -37,8 +49,27 @@ class CustomRoadMap(RoadMap):
     Hybrid RoadMap: Calibrated node positions + proper road geometry radii.
     """
 
-    def __init__(self):
+    def __init__(self, scale_factor=None, x_offset=None, y_offset=None):
         super().__init__()
+        if scale_factor is None:
+            scale_factor = SCALE_FACTOR
+        if x_offset is None:
+            x_offset = X_OFFSET
+        if y_offset is None:
+            y_offset = Y_OFFSET
+
+        self.scale_factor = float(scale_factor)
+        self.x_offset = float(x_offset)
+        self.y_offset = float(y_offset)
+
+        node_data = {
+            node_id: (
+                x * self.scale_factor + self.x_offset,
+                y * self.scale_factor + self.y_offset,
+                heading,
+            )
+            for node_id, (x, y, heading) in NODE_DATA_BASE.items()
+        }
 
         # Original SDCS radii from mats.py
         scale = 0.002035
@@ -54,7 +85,8 @@ class CustomRoadMap(RoadMap):
 
         # Edge configurations with radius values (from old code)
         # Format: [from_node, to_node, turn_radius]
-        edgeConfigs = [
+        # Radii are scaled by the selected factor exactly once.
+        edgeConfigs_base = [
             [0, 2, 0.7],
             [1, 7, innerLaneRadius],
             [1, 8, outerLaneRadius],
@@ -81,7 +113,7 @@ class CustomRoadMap(RoadMap):
             [12, 7, outerLaneRadius],
             [12, 8, innerLaneRadius],
             [13, 19, innerLaneRadius],
-            [14, 16, 0.67],
+            [14, 16, 0],  # Straight-line: 90° to -80.6° heading diff
             [14, 20, trafficCircleRadius],
             [15, 5, outerLaneRadius],
             [15, 6, innerLaneRadius],
@@ -89,7 +121,7 @@ class CustomRoadMap(RoadMap):
             [16, 18, 0.4],
             [17, 15, innerLaneRadius],
             [17, 16, 0.67],
-            [17, 20, 0.65],
+            [17, 20, 0],  # Straight-line: -9.4° to -180° heading diff
             [18, 11, 0.55],
             [19, 17, 0.15],  # UPDATED to 0.35 (was 0.5)
             [20, 22, outerLaneRadius],
@@ -99,10 +131,16 @@ class CustomRoadMap(RoadMap):
             [23, 21, 0.55],
         ]
 
+        # Scale fixed radii (keep 0 as 0)
+        edgeConfigs = [
+            [from_node, to_node, radius * self.scale_factor if radius > 0 else 0]
+            for from_node, to_node, radius in edgeConfigs_base
+        ]
+
         # Add nodes with calibrated positions
-        sorted_ids = sorted(NODE_DATA.keys())
+        sorted_ids = sorted(node_data.keys())
         for node_id in sorted_ids:
-            x, y, heading_deg = NODE_DATA[node_id]
+            x, y, heading_deg = node_data[node_id]
             heading_rad = np.radians(heading_deg)
             self.add_node([x, y, heading_rad])
 
