@@ -147,9 +147,46 @@ nodeSequence = [
 # -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
 
 # region : Initial setup
+# region : Initial setup
 if enableSteeringControl:
     roadmap = CustomRoadMap()
     waypointSequence = roadmap.generate_path(nodeSequence)
+
+    # --- NEW DEBUGGING BLOCK ---
+    if waypointSequence is None:
+        print("\n[ERROR] Path generation failed! Tracing nodeSequence for errors...")
+        for i in range(len(nodeSequence) - 1):
+            from_node = nodeSequence[i]
+            to_node = nodeSequence[i + 1]
+
+            edge_found = False
+            has_waypoints = False
+
+            for edge in roadmap.edges:
+                # Check if this edge connects our sequence nodes
+                if (
+                    roadmap.nodes.index(edge.fromNode) == from_node
+                    and roadmap.nodes.index(edge.toNode) == to_node
+                ):
+                    edge_found = True
+                    if edge.waypoints is not None:
+                        has_waypoints = True
+                    break
+
+            if not edge_found:
+                print(
+                    f" -> FAILED: Edge {from_node} -> {to_node} does not exist in CustomRoadMap configurations!"
+                )
+            elif not has_waypoints:
+                print(
+                    f" -> FAILED: Edge {from_node} -> {to_node} exists, but curved waypoint generation failed (check coordinates/radius)."
+                )
+
+        import sys
+
+        sys.exit(1)  # Stop the program before it crashes PyQTGraph
+    # ---------------------------
+
     initialPose = roadmap.get_node_pose(nodeSequence[0]).squeeze()
 else:
     initialPose = [0, 0, 0]
