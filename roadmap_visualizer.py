@@ -102,9 +102,38 @@ def main():
     waypointSequence = roadmap.generate_path(nodeSequence)
 
     if waypointSequence is None:
-        print("\n[ERROR] Path generation returned None. A curve failed to generate.")
-        print("Check the terminal output of CustomRoadMap for failing edges.")
-        # We can still plot the nodes to see where the geometry is breaking!
+        print("\n[ERROR] Path generation failed! Tracing nodeSequence for errors...")
+        
+        # --- NEW DEBUGGING LOGIC ---
+        for i in range(len(nodeSequence) - 1):
+            from_node = nodeSequence[i]
+            to_node = nodeSequence[i + 1]
+
+            edge_found = False
+            has_waypoints = False
+
+            for edge in roadmap.edges:
+                # Check if this edge connects our sequence nodes
+                if (
+                    roadmap.nodes.index(edge.fromNode) == from_node
+                    and roadmap.nodes.index(edge.toNode) == to_node
+                ):
+                    edge_found = True
+                    if edge.waypoints is not None:
+                        has_waypoints = True
+                    break
+
+            if not edge_found:
+                print(
+                    f" -> FAILED: Edge {from_node} -> {to_node} does not exist in CustomRoadMap configurations!"
+                )
+            elif not has_waypoints:
+                print(
+                    f" -> FAILED: Edge {from_node} -> {to_node} exists, but curved waypoint generation failed (check coordinates/radius)."
+                )
+        # ---------------------------
+
+        print("\nWe can still plot the nodes to see where the geometry is breaking!")
         plot_map(roadmap, None)
         return
 

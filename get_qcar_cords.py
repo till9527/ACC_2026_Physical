@@ -16,7 +16,10 @@ KILL_THREAD = False
 
 current_x = 0.0
 current_y = 0.0
-is_ready = False  # Flag to let us know when we have a real coordinate
+is_ready = False
+
+# --- FIX 1: Define the same calibration pose used in vehicle_control.py ---
+calibrationPose = [0, 2, -np.pi / 2]
 
 
 def sig_handler(*args):
@@ -31,8 +34,9 @@ def sensor_loop():
     global KILL_THREAD, current_x, current_y, is_ready
 
     qcar = QCar(readMode=1, frequency=100)
-    # calibrate=False ensures it relies entirely on the existing stored workspace calibration
-    gps = QCarGPS(calibrate=False)
+
+    # --- FIX 2: Pass the initialPose to QCarGPS so the coordinate grids align ---
+    gps = QCarGPS(initialPose=calibrationPose, calibrate=False)
 
     ekf_initialized = False
     ekf = None
@@ -73,11 +77,10 @@ def sensor_loop():
 
 
 if __name__ == "__main__":
-    # Note: If you are in the virtual environment (QLabs), this setup block
-    # will teleport the car to [0,0,0]. If you want it to stay where you
-    # previously left it in QLabs, you might need to comment this out.
-    if not IS_PHYSICAL_QCAR:
-        qlabs_setup.setup(initialPosition=[0, 0, 0], initialOrientation=[0, 0, 0])
+    # --- FIX 3: Prevent teleporting the car to the origin in QLabs ---
+    # Commented out so it tracks the car precisely where you left it.
+    # if not IS_PHYSICAL_QCAR:
+    #     qlabs_setup.setup(initialPosition=[0, 0, 0], initialOrientation=[0, 0, 0])
 
     print("Initializing QCar sensors and grabbing stored calibration...")
 
@@ -105,5 +108,6 @@ if __name__ == "__main__":
         KILL_THREAD = True
 
     sensor_thread.join()
-    if not IS_PHYSICAL_QCAR:
-        qlabs_setup.terminate()
+
+    # if not IS_PHYSICAL_QCAR:
+    #     qlabs_setup.terminate()

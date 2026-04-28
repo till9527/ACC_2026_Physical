@@ -279,6 +279,9 @@ class SteeringController:
         if s >= v_mag or dist_to_next < 0.1:
             if self.cyclic or self.wpi < self.N - 2:
                 self.wpi += 1
+                # print(
+                #     f"Passed Node/Waypoint Index: {self.wpi} | Current Pose: X={p[0]:.2f}, Y={p[1]:.2f}"
+                # )
 
         ep = wp_1 + v_uv * s
         ct = ep - p
