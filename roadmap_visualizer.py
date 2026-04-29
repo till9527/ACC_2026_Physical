@@ -103,7 +103,7 @@ def main():
 
     if waypointSequence is None:
         print("\n[ERROR] Path generation failed! Tracing nodeSequence for errors...")
-        
+
         # --- NEW DEBUGGING LOGIC ---
         for i in range(len(nodeSequence) - 1):
             from_node = nodeSequence[i]
@@ -146,7 +146,7 @@ def plot_map(roadmap, waypointSequence):
     Plots the map image, the individual calibrated nodes, and the generated path.
     """
     fig, ax = plt.subplots(figsize=(10, 12))
-    ax.set_title("Offline Custom Roadmap Visualizer", fontsize=16)
+    #ax.set_title("Offline Custom Roadmap Visualizer", fontsize=16)
 
     # 2. Load and display the background map image
 
@@ -185,14 +185,22 @@ def plot_map(roadmap, waypointSequence):
     ax.scatter(node_x, node_y, color="red", s=50, zorder=5, label="Calibrated Nodes")
 
     # Formatting
-    ax.set_xlabel("X Position (m)")
-    ax.set_ylabel("Y Position (m)")
-    ax.set_xlim(-2.8, 2.8)
-    ax.set_ylim(-1.5, 5.0)
-    ax.grid(True, linestyle="--", alpha=0.5)
-    ax.legend(loc="upper left")
+    # ax.set_xlabel("X Position (m)")
+    # ax.set_ylabel("Y Position (m)")
+    # ax.set_xlim(-2.8, 2.8)
+    # ax.set_ylim(-1.5, 5.0)
+    #ax.grid(True, linestyle="--", alpha=0.5)
+    #ax.legend(loc="upper left")
     ax.set_aspect("equal", adjustable="box")  # Keeps the map from stretching
-
+    ax.axis("off")  # Hide axes for a cleaner look
+    output_filename = "ar_roadmap_overlay.png"
+    plt.savefig(
+        output_filename, 
+        transparent=True,       # This makes the background invisible
+        bbox_inches='tight',    # Crops out the blank whitespace margins
+        pad_inches=0,           # Removes all padding
+        dpi=300                 # High resolution for AR zooming
+    )
     plt.show()
 
 
