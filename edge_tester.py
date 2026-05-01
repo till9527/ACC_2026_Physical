@@ -20,7 +20,7 @@ from pal.utilities.math import wrap_to_pi
 from hal.content.qcar_functions import QCarEKF
 from hal.products.mats import SDCSRoadMap
 import pal.resources.images as images
-from custom_roadmap import CustomRoadMap
+from custom_roadmap_joe import CustomRoadMap
 
 # ================ Experiment Configuration ================
 tf = 6000
@@ -38,7 +38,7 @@ K_stanley = 1
 # EDGE TESTER CONFIGURATION:
 # Change these two nodes to test a specific edge trajectory
 # ========================================================
-nodeSequence = [14, 20]
+nodeSequence = [2, 4]
 
 # -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
 

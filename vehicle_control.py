@@ -16,15 +16,16 @@ from threading import Thread
 import time
 import cv2
 import pyqtgraph as pg
-
-from pal.products.qcar import QCar, QCarGPS, IS_PHYSICAL_QCAR
+import threading
+from pal.products.qcar import QCar, QCarGPS, QCarCameras, IS_PHYSICAL_QCAR
 from pal.utilities.scope import MultiScope
+from pal.utilities.vision import Camera2D
 from pal.utilities.math import wrap_to_pi
 from hal.content.qcar_functions import QCarEKF
 from hal.products.mats import SDCSRoadMap
 import pal.resources.images as images
 from custom_roadmap import CustomRoadMap
-
+CAMERA_ID = "3"
 
 # ================ Experiment Configuration ================
 # ===== Timing Parameters
@@ -49,104 +50,29 @@ K_i = 1
 # - nodeSequence: list of nodes from roadmap. Used for trajectory generation.
 enableSteeringControl = True
 K_stanley = 1
+
+# ===== Vision Controller Parameters
+# - enableVisionControl: enables the hybrid vision/GPS system
+# - vision_kp: Proportional gain for vision steering
+enableVisionControl = True
+vision_kp = 0.002
+frame_lock = threading.Lock()
+
 nodeSequence = [
     # Lap 1: The Grand Outer Tour
-    # (Hits the outer perimeter, bottom loop, and full roundabout)
-    10,
-    2,
-    4,
-    6,
-    8,
-    23,
-    21,
-    16,
-    18,
-    11,
-    12,
-    7,
-    14,
-    20,
-    22,
-    9,
-    13,
-    19,
-    17,
-    15,
-    5,
-    3,
-    1,
-    8,
+    10, 2, 4, 6, 8, 23, 21, 16, 18, 11, 12, 7, 14, 20, 22, 9, 13, 19, 17, 15, 5, 3, 1, 8,
     # Lap 2: Inner City & Left-Side Crossings
-    # (Hits the inner tight nodes and 17->20 shortcut)
-    10,
-    1,
-    7,
-    5,
-    3,
-    1,
-    13,
-    19,
-    17,
-    20,
-    22,
+    10, 1, 7, 5, 3, 1, 13, 19, 17, 20, 22,
     # Lap 3: Mid-Track Cuts & Reverse Roundabout Entry
-    # (Hits 14->16 and traces the tricky 17->16 inner loop)
-    10,
-    2,
-    4,
-    14,
-    16,
-    17,
-    15,
-    6,
-    0,
-    2,
-    4,
-    6,
-    13,
-    19,
-    17,
-    16,
-    18,
-    11,
-    12,
-    8,
+    10, 2, 4, 14, 16, 17, 15, 6, 0, 2, 4, 6, 13, 19, 17, 16, 18, 11, 12, 8,
     # Lap 4: The Cleanup Lap
-    # (Catches the remaining odd edges like 12->0, 9->0, and 9->7)
-    10,
-    1,
-    8,
-    23,
-    21,
-    16,
-    18,
-    11,
-    12,
-    0,
-    2,
-    4,
-    14,
-    20,
-    22,
-    9,
-    7,
-    14,
-    20,
-    22,
-    9,
-    0,
-    2,
-    4,
-    6,
-    8,
-    10,
+    10, 1, 8, 23, 21, 16, 18, 11, 12, 0, 2, 4, 14, 20, 22, 9, 7, 14, 20, 22, 9, 0, 2, 4, 6, 8, 10,
 ]
 
 
 # endregion
 # -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
 
-# region : Initial setup
 # region : Initial setup
 if enableSteeringControl:
     roadmap = CustomRoadMap()
@@ -242,8 +168,6 @@ class SpeedController:
             self.kp * e + self.ki * self.ei, -self.maxThrottle, self.maxThrottle
         )
 
-        return 0
-
 
 class SteeringController:
 
@@ -279,9 +203,6 @@ class SteeringController:
         if s >= v_mag or dist_to_next < 0.1:
             if self.cyclic or self.wpi < self.N - 2:
                 self.wpi += 1
-                # print(
-                #     f"Passed Node/Waypoint Index: {self.wpi} | Current Pose: X={p[0]:.2f}, Y={p[1]:.2f}"
-                # )
 
         ep = wp_1 + v_uv * s
         ct = ep - p
@@ -299,10 +220,54 @@ class SteeringController:
             self.maxSteeringAngle,
         )
 
-        return 0
+
+class VisionSteeringController:
+
+    def __init__(self, kp=0.005):
+        self.kp = kp
+        self.maxSteeringAngle = np.pi / 6
+
+    def process_image(self, image):
+        # 1. Crop the image to only look at the bottom half (the road ahead)
+        h, w = image.shape[:2]
+        roi = image[int(h / 2) : h, :]
+
+        # 2. Convert to HSV color space for easier color isolation
+        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+
+        # 3. Define color range for the yellow lane line
+        # NOTE: You WILL need to tune these values based on your room's lighting!
+        lower_yellow = np.array([20, 100, 100])
+        upper_yellow = np.array([40, 255, 255])
+        
+        # Create a mask that only shows the yellow line
+        mask = cv2.inRange(hsv, lower_yellow, upper_yellow)
+
+        # 4. Find the center of the detected line using image moments
+        M = cv2.moments(mask)
+        if M["m00"] > 0:
+            # Calculate the X coordinate of the center of the line
+            cx = int(M["m10"] / M["m00"])
+            
+            # Calculate error: distance from the center of the line to the center of the camera
+            error = (w / 2) - cx 
+            return error, mask
+        
+        # If no line is found, return 0 error
+        return 0, mask
+
+    def update(self, image):
+        # Get the pixel error from the center
+        error, mask = self.process_image(image)
+
+        # Simple Proportional (P) control for steering
+        # If line is to the right (negative error), steer right (negative angle)
+        steering_cmd = self.kp * error 
+
+        return np.clip(steering_cmd, -self.maxSteeringAngle, self.maxSteeringAngle), mask
 
 
-def controlLoop():
+def controlLoop(camera):
     # region controlLoop setup
     global KILL_THREAD
     u = 0
@@ -316,10 +281,14 @@ def controlLoop():
     speedController = SpeedController(kp=K_p, ki=K_i)
     if enableSteeringControl:
         steeringController = SteeringController(waypoints=waypointSequence, k=K_stanley)
+        
+    if enableVisionControl:
+        visionController = VisionSteeringController(kp=vision_kp)
     # endregion
 
     # region QCar interface setup
     qcar = QCar(readMode=1, frequency=controllerUpdateRate)
+    
     if enableSteeringControl:
         ekf = QCarEKF(x_0=initialPose)
         gps = QCarGPS(initialPose=calibrationPose, calibrate=calibrate)
@@ -339,6 +308,13 @@ def controlLoop():
 
             # region : Read from sensors and update state estimates
             qcar.read()
+            
+            front_image = None
+            if enableVisionControl and camera is not None:
+                if camera.read():
+                    with frame_lock:
+                        front_image = camera.imageData
+
             if enableSteeringControl:
                 if gps.readGPS():
                     y_gps = np.array(
@@ -376,7 +352,26 @@ def controlLoop():
 
                 # region : Steering controller update
                 if enableSteeringControl:
-                    delta = steeringController.update(p, th, v)
+                    # Always calculate GPS delta as a baseline
+                    gps_delta = steeringController.update(p, th, v)
+                    
+                    if enableVisionControl and front_image is not None:
+                        vision_delta, debug_mask = visionController.update(front_image)
+                        
+                        # --- HYBRID BLENDING LOGIC ---
+                        # Count how many yellow pixels the camera sees. 
+                        # If it sees a solid line, use vision. If the line breaks 
+                        # (like at an intersection), fall back to the GPS controller!
+                        if cv2.countNonZero(debug_mask) > 50:
+                            delta = vision_delta
+                        else:
+                            delta = gps_delta
+                            
+                        # UNCOMMENT THESE TWO LINES TO DEBUG LIGHTING/COLORS
+                        cv2.imshow("Lane Mask", debug_mask)
+                        cv2.waitKey(1)
+                    else:
+                        delta = gps_delta
                 else:
                     delta = 0
                 # endregion
@@ -427,6 +422,17 @@ def controlLoop():
 
 # region : Setup and run experiment
 if __name__ == "__main__":
+
+    # Initialize the camera on the MAIN thread to avoid Quanser API affinity errors
+    if enableVisionControl:
+        camera = Camera2D(
+            cameraId=CAMERA_ID,
+            frameWidth=640,
+            frameHeight=480,
+            frameRate=30,
+        )
+    else:
+        camera = None
 
     # region : Setup scopes
     if IS_PHYSICAL_QCAR:
@@ -528,7 +534,8 @@ if __name__ == "__main__":
     # endregion
 
     # region : Setup control thread, then run experiment
-    controlThread = Thread(target=controlLoop)
+    # Pass the main-thread-initialized camera into the control loop!
+    controlThread = Thread(target=controlLoop, args=(camera,))
     controlThread.start()
 
     try:
@@ -537,6 +544,10 @@ if __name__ == "__main__":
             time.sleep(0.01)
     finally:
         KILL_THREAD = True
+        # Safely release the camera to prevent ghost locks on next run
+        if enableVisionControl and camera is not None:
+            camera.terminate()
+            
     # endregion
     if not IS_PHYSICAL_QCAR:
         qlabs_setup.terminate()
