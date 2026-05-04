@@ -1,10 +1,7 @@
-# qcar_sender_with_control.py - Runs ON THE QCAR
+# qcar_standalone_control.py - Runs ON THE QCAR
 
-import socket
-import struct
 import threading
 import time
-import select
 import signal
 import numpy as np
 import cv2
@@ -18,11 +15,8 @@ from pal.products.qcar import (
 from pal.utilities.vision import Camera2D
 from pal.utilities.math import wrap_to_pi
 from hal.content.qcar_functions import QCarEKF
+from hal.utilities.image_processing import ImageProcessing
 from custom_roadmap import CustomRoadMap 
-
-# --- Networking Setup ---
-COMPUTER_IP = "192.168.2.11"
-PORT = 8080
 
 # --- Camera Settings ---
 CAMERA_ID = "2"
@@ -42,7 +36,7 @@ enableSteeringControl = True
 K_stanley = 1
 
 nodeSequence = [
-    10, 2, 4, 14,16,18,11,12,8,10
+    10, 2, 4, 14, 16, 18, 11, 12, 8, 10
 ]
 
 # --- Global variables ---
@@ -50,8 +44,8 @@ is_running = True
 latest_frame = None
 frame_lock = threading.Lock()
 
-car_state = "GO"
-telemetry_lock = threading.Lock()
+# Define the car's state locally since we are no longer receiving commands
+car_state = "FORCE_GO" 
 
 # --- Shutdown Signal Handler ---
 def sig_handler(*args):
@@ -66,18 +60,14 @@ class SpeedController:
 
     def __init__(self, kp=0, ki=0):
         self.maxThrottle = 0.3
-
         self.kp = kp
         self.ki = ki
-
         self.ei = 0
 
     # ==============  SECTION A -  Speed Control  ====================
     def update(self, v, v_ref, dt):
-
         e = v_ref - v
         self.ei += dt * e
-
         return np.clip(
             self.kp * e + self.ki * self.ei, -self.maxThrottle, self.maxThrottle
         )
@@ -87,14 +77,11 @@ class SteeringController:
 
     def __init__(self, waypoints, k=1, cyclic=True):
         self.maxSteeringAngle = np.pi / 6
-
         self.wp = waypoints
         self.N = len(waypoints[0, :])
         self.wpi = 0
-
         self.k = k
         self.cyclic = cyclic
-
         self.p_ref = (0, 0)
         self.th_ref = 0
 
@@ -135,48 +122,39 @@ class SteeringController:
         )
 
 
-
 # --- Thread Functions ---
-
-def receiver_thread_func(sock):
-    """Listens for the STATE string from the computer."""
-    global is_running, car_state
-    print("Receiver thread started...")
-    
-    buffer = ""
-    while is_running:
-        readable, _, _ = select.select([sock], [], [], 1.0)
-        if sock in readable:
-            try:
-                data = sock.recv(1024)
-                if data:
-                    buffer += data.decode("utf-8")
-                    
-                    if "\n" in buffer:
-                        lines = buffer.split("\n")
-                        latest_cmd = lines[-2] 
-                        buffer = lines[-1]     
-                        
-                        with telemetry_lock:
-                            car_state = latest_cmd
-                else:
-                    print("Receiver thread: Connection closed by computer.")
-                    is_running = False
-                    break
-            except socket.error as e:
-                if is_running:
-                    print(f"Receiver thread: Socket error: {e}")
-                break
-    print("Receiver thread stopped.")
-
-
 def camera_thread_func(camera):
     global latest_frame, is_running
     print("Camera thread started...")
+    
+    # Hardcode the threshold value that was default in the UI
+    threshold_value = 115 
+    
     while is_running:
         if camera.read():
+            # 1. Get raw frame
+            raw_frame = camera.imageData
+
+            # 2. CROP TO LOWER HALF (to match computer_receiver_opengl.py)
+            h, w = raw_frame.shape[:2]
+            lower_half_frame = raw_frame[int(h / 2):h, :]
+
+            # 3. CLEAN THRESHOLDING
+            # Convert to Grayscale
+            gray = cv2.cvtColor(lower_half_frame, cv2.COLOR_BGR2GRAY)
+            
+            # Apply Gaussian Blur
+            blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+            
+            # Apply Binary Threshold (using 115)
+            _, binaryImage = cv2.threshold(blurred, threshold_value, 255, cv2.THRESH_BINARY)
+
             with frame_lock:
-                latest_frame = camera.imageData
+                latest_frame = binaryImage
+                cv2.imshow("Processed Frame", binaryImage)
+                if cv2.waitKey(1) & 0xFF == ord("q"):
+                    is_running = False
+
         time.sleep(1 / FRAME_RATE)
     print("Camera thread stopped.")
 
@@ -219,8 +197,7 @@ def control_thread_func(initialPose, waypointSequence, calibrationPose, calibrat
             if t < startDelay:
                 u, delta = 0, 0
             else:
-                with telemetry_lock:
-                    state = car_state
+                state = car_state
 
                 # === Speed Application ===
                 if state == "FORCE_GO":
@@ -266,16 +243,9 @@ else:
 
     controlThread = None
     cameraThread = None
-    receiverThread = None
-    client_socket = None
     camera = None
 
     try:
-        client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        print(f"Connecting to computer at {COMPUTER_IP}:{PORT}...")
-        client_socket.connect((COMPUTER_IP, PORT))
-        print("Connection established.")
-
         camera = Camera2D(
             cameraId=CAMERA_ID,
             frameWidth=IMAGE_WIDTH,
@@ -288,34 +258,14 @@ else:
             target=control_thread_func,
             args=(initialPose, waypointSequence, calibrationPose, calibrate),
         )
-        receiverThread = threading.Thread(
-            target=receiver_thread_func, args=(client_socket,)
-        )
 
         cameraThread.start()
         controlThread.start()
-        receiverThread.start()
 
-        time.sleep(1.0)
-
+        # The main thread just sleeps while the camera and control threads run in the background
         while is_running:
-            local_frame = None
-            with frame_lock:
-                if latest_frame is not None:
-                    local_frame = np.ascontiguousarray(latest_frame)
+            time.sleep(0.5)
 
-            if local_frame is not None:
-                encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 80]
-                _, encoded_img = cv2.imencode(".jpg", local_frame, encode_param)
-
-                data = np.array(encoded_img)
-                frame_bytes = data.tobytes()
-
-                message_header = struct.pack(">L", len(frame_bytes))
-                client_socket.sendall(message_header)
-                client_socket.sendall(frame_bytes)
-
-            time.sleep(0.02)
     except Exception as e:
         print(f"An error occurred in the main thread: {e}")
     finally:
@@ -326,12 +276,8 @@ else:
             controlThread.join()
         if cameraThread and cameraThread.is_alive():
             cameraThread.join()
-        if receiverThread and receiverThread.is_alive():
-            receiverThread.join()
 
         if camera:
             camera.terminate()
-        if client_socket:
-            client_socket.close()
 
         print("Shutdown complete.")
