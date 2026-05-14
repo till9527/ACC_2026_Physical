@@ -79,7 +79,7 @@ class CustomRoadMap(RoadMap):
             [1, 8, 0.8913],
             [2, 4, 0.8913],
             [3, 1, 0.6217],
-            [4, 6, 0.8913],
+            [4, 6, 0.95],
             [5, 3, 0.6217],
             [6, 0, 0.8913],
             [6, 8, 0.0],
@@ -120,7 +120,7 @@ class CustomRoadMap(RoadMap):
 
         # Scale fixed radii (keep 0 as 0)
         edgeConfigs = [
-            [from_node, to_node, radius * self.scale_factor if radius > 0 else 0]
+            [from_node, to_node, radius if radius > 0 else 0]
             for from_node, to_node, radius in edgeConfigs_base
         ]
 

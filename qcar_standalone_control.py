@@ -16,7 +16,7 @@ from pal.utilities.vision import Camera2D
 from pal.utilities.math import wrap_to_pi
 from hal.content.qcar_functions import QCarEKF
 from hal.utilities.image_processing import ImageProcessing
-from custom_roadmap import CustomRoadMap 
+from custom_roadmap import CustomRoadMap
 
 # --- Camera Settings ---
 CAMERA_ID = "2"
@@ -32,26 +32,22 @@ v_ref = 0.5
 K_p = 0.1
 K_i = 1
 
+# Toggle this to False to go back to GPS waypoint navigation
+USE_VISION_STEERING = True
+
 enableSteeringControl = True
 K_stanley = 1
 
-# Blended Control Settings
-MOUSE_WEIGHT = 1  # 0.0 = full autonomous, 1.0 = full mouse control
-
-nodeSequence = [
-    10, 2, 4, 14, 16, 18, 11, 12, 8, 10
-]
+nodeSequence = [10, 2, 4, 14, 16, 18, 11, 12, 8, 10]
 
 # --- Global variables ---
 is_running = True
 latest_frame = None
 frame_lock = threading.Lock()
 
-# Define the car's state locally since we are no longer receiving commands
-car_state = "FORCE_GO" 
+# Define the car's state locally
+car_state = "FORCE_GO"
 
-# Global variable for mouse control
-mouse_steering_angle = 0.0
 
 # --- Shutdown Signal Handler ---
 def sig_handler(*args):
@@ -59,45 +55,18 @@ def sig_handler(*args):
     is_running = False
     print("\nShutdown signal received.")
 
+
 signal.signal(signal.SIGINT, sig_handler)
 
-# --- Mouse Callback for Blended Steering ---
-# --- Mouse Callback for Blended Steering ---
-def mouse_callback(event, x, y, flags, param):
-    global mouse_steering_angle
-    
-    if event == cv2.EVENT_MOUSEMOVE:
-        # 1. Reduce max mouse steering authority (pi/12 is 15 degrees)
-        max_mouse_steer = np.pi / 12 
-        
-        # Calculate cursor offset from center (-1.0 to 1.0)
-        # x < 320 means left (positive offset), x > 320 means right (negative offset)
-        offset = ((IMAGE_WIDTH / 2) - x) / (IMAGE_WIDTH / 2)
-        
-        # 2. Define a deadzone (e.g., center 20% of the screen does nothing)
-        deadzone = 0.20 
-        
-        if abs(offset) < deadzone:
-            mouse_steering_angle = 0.0
-        else:
-            # Smoothly rescale the remaining offset so it doesn't instantly jerk 
-            # when leaving the deadzone.
-            if offset > 0:
-                scaled_offset = (offset - deadzone) / (1.0 - deadzone)
-            else:
-                scaled_offset = (offset + deadzone) / (1.0 - deadzone)
-                
-            mouse_steering_angle = scaled_offset * max_mouse_steer
+
 # --- Controller Classes ---
 class SpeedController:
-
     def __init__(self, kp=0, ki=0):
         self.maxThrottle = 0.3
         self.kp = kp
         self.ki = ki
         self.ei = 0
 
-    # ==============  SECTION A -  Speed Control  ====================
     def update(self, v, v_ref, dt):
         e = v_ref - v
         self.ei += dt * e
@@ -107,7 +76,6 @@ class SpeedController:
 
 
 class SteeringController:
-
     def __init__(self, waypoints, k=1, cyclic=True):
         self.maxSteeringAngle = np.pi / 6
         self.wp = waypoints
@@ -118,7 +86,6 @@ class SteeringController:
         self.p_ref = (0, 0)
         self.th_ref = 0
 
-    # ==============  SECTION B -  Steering Control  ====================
     def update(self, p, th, speed):
         wp_1 = self.wp[:, np.mod(self.wpi, self.N - 1)]
         wp_2 = self.wp[:, np.mod(self.wpi + 1, self.N - 1)]
@@ -155,17 +122,91 @@ class SteeringController:
         )
 
 
+class VisionSteeringController:
+    """
+    PD Controller that uses the centroid of the binary mask to keep the car centered.
+    """
+
+    def __init__(self, kp=0.003, kd=0.001):
+        self.kp = kp
+        self.kd = kd
+        self.prev_error = 0
+        self.maxSteeringAngle = np.pi / 6
+
+    def update(self, binary_mask, dt):
+        if binary_mask is None:
+            return 0.0
+
+        h, w = binary_mask.shape
+
+        # Look at a horizontal strip in the lower middle of the mask
+        # This prevents the car from being distracted by distant lines or the extreme edges
+        strip = binary_mask[int(h * 0.5) : int(h * 0.9), :]
+
+        # Calculate image moments to find the centroid of the white pixels
+        M = cv2.moments(strip)
+        if M["m00"] > 0:
+            cx = int(M["m10"] / M["m00"])
+
+            target_center = w / 2
+
+            # If centroid is right of center (cx > target_center), error is negative -> steer right
+            error = target_center - cx
+
+            derivative = (error - self.prev_error) / dt if dt > 0 else 0
+            self.prev_error = error
+
+            steering = (self.kp * error) + (self.kd * derivative)
+            return np.clip(steering, -self.maxSteeringAngle, self.maxSteeringAngle)
+
+        # If no lines are seen, keep the wheels straight
+        return 0.0
+
+
 # --- Thread Functions ---
+def camera_thread_func(camera):
+    global latest_frame, is_running
+    print("Camera thread started...")
+
+    threshold_value = 115
+
+    while is_running:
+        if camera.read():
+            raw_frame = camera.imageData
+
+            # Crop to lower half to match original UI logic
+            h, w = raw_frame.shape[:2]
+            lower_half_frame = raw_frame[int(h / 2) : h, :]
+
+            # Grayscale, blur, and threshold
+            gray = cv2.cvtColor(lower_half_frame, cv2.COLOR_BGR2GRAY)
+            blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+            _, binaryImage = cv2.threshold(
+                blurred, threshold_value, 255, cv2.THRESH_BINARY
+            )
+
+            with frame_lock:
+                latest_frame = binaryImage
+
+        time.sleep(1 / FRAME_RATE)
+    print("Camera thread stopped.")
+
+
 def control_thread_func(initialPose, waypointSequence, calibrationPose, calibrate):
     global is_running
     print("Control thread started...")
 
     speedController = SpeedController(kp=K_p, ki=K_i)
+
+    # Initialize both controllers
     if enableSteeringControl:
         steeringController = SteeringController(waypoints=waypointSequence, k=K_stanley)
+    visionSteeringController = VisionSteeringController(kp=0.003, kd=0.001)
 
     qcar = QCar(readMode=1, frequency=controllerUpdateRate)
-    time.sleep(5)
+
+    # We still initialize EKF/GPS so the car doesn't throw errors if it's plugged in,
+    # but we will bypass its steering output if USE_VISION_STEERING is True.
     if enableSteeringControl:
         ekf = QCarEKF(x_0=initialPose)
         gps = QCarGPS(initialPose=calibrationPose, calibrate=calibrate)
@@ -184,7 +225,9 @@ def control_thread_func(initialPose, waypointSequence, calibrationPose, calibrat
             qcar.read()
             if enableSteeringControl:
                 if gps.readGPS():
-                    y_gps = np.array([gps.position[0], gps.position[1], gps.orientation[2]])
+                    y_gps = np.array(
+                        [gps.position[0], gps.position[1], gps.orientation[2]]
+                    )
                     ekf.update([qcar.motorTach, delta], dt, y_gps, qcar.gyroscope[2])
                 else:
                     ekf.update([qcar.motorTach, delta], dt, None, qcar.gyroscope[2])
@@ -203,19 +246,24 @@ def control_thread_func(initialPose, waypointSequence, calibrationPose, calibrat
                 elif state == "FORCE_STOP" or state == "STOP":
                     target_speed = 0.0
                 else:
-                    target_speed = v_ref 
-                
+                    target_speed = v_ref
+
                 u = speedController.update(v, target_speed, dt)
 
-                # === Steering Application (Blended Control) ===
-                if enableSteeringControl:
-                    stanley_delta = steeringController.update(p, th, v)
-                    
-                    # Calculate the weighted average between user input and autonomous input
-                    blended_delta = (mouse_steering_angle * MOUSE_WEIGHT) + (stanley_delta * (1.0 - MOUSE_WEIGHT))
-                    
-                    # Ensure we don't exceed the physical steering limits
-                    delta = np.clip(blended_delta, -np.pi/6, np.pi/6)
+                # === Steering Application ===
+                if USE_VISION_STEERING:
+                    # Grab the latest binary mask safely
+                    local_mask = None
+                    with frame_lock:
+                        if latest_frame is not None:
+                            local_mask = latest_frame.copy()
+
+                    # Calculate steering angle based on lane lines
+                    delta = visionSteeringController.update(local_mask, dt)
+
+                elif enableSteeringControl:
+                    # Fallback to standard GPS tracking
+                    delta = steeringController.update(p, th, v)
                 else:
                     delta = 0
 
@@ -235,28 +283,27 @@ else:
         waypointSequence = roadmap.generate_path(nodeSequence)
 
         if waypointSequence is None:
-            print("\n[ERROR] Path generation failed! Tracing nodeSequence for errors...")
+            print(
+                "\n[ERROR] Path generation failed! Tracing nodeSequence for errors..."
+            )
             sys.exit(1)
 
         initialPose = roadmap.get_node_pose(nodeSequence[0]).squeeze()
     else:
         initialPose = [0, 0, 0]
 
-    calibrate = "y" in input("Do you want to recalibrate? (y/n): ")
+    # Only ask to recalibrate GPS if we are actually using it
+    calibrate = False
+    if not USE_VISION_STEERING:
+        calibrate = "y" in input("Do you want to recalibrate GPS? (y/n): ")
+
     calibrationPose = [0, 2, -np.pi / 2]
 
     controlThread = None
+    cameraThread = None
     camera = None
 
     try:
-        # Start control thread in the background
-        controlThread = threading.Thread(
-            target=control_thread_func,
-            args=(initialPose, waypointSequence, calibrationPose, calibrate),
-        )
-        controlThread.start()
-
-        # Initialize Camera
         camera = Camera2D(
             cameraId=CAMERA_ID,
             frameWidth=IMAGE_WIDTH,
@@ -264,45 +311,18 @@ else:
             frameRate=FRAME_RATE,
         )
 
-        print("Camera processing started in main thread...")
-        threshold_value = 115 
-        target_frame_time = 1.0 / FRAME_RATE
+        cameraThread = threading.Thread(target=camera_thread_func, args=(camera,))
+        controlThread = threading.Thread(
+            target=control_thread_func,
+            args=(initialPose, waypointSequence, calibrationPose, calibrate),
+        )
 
-        # Create the window and attach the mouse listener BEFORE the loop
-        cv2.namedWindow("Processed Frame")
-        cv2.setMouseCallback("Processed Frame", mouse_callback)
+        cameraThread.start()
+        controlThread.start()
 
-        # Run vision strictly in the main thread
-        while is_running and controlThread.is_alive():
-            start_time = time.time()
-
-            if camera.read():
-                # 1. Get raw frame
-                raw_frame = camera.imageData
-
-                # 2. CROP TO LOWER HALF
-                h, w = raw_frame.shape[:2]
-                lower_half_frame = raw_frame[int(h / 2):h, :]
-
-                # 3. CLEAN THRESHOLDING
-                gray = cv2.cvtColor(lower_half_frame, cv2.COLOR_BGR2GRAY)
-                blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-                _, binaryImage = cv2.threshold(blurred, threshold_value, 255, cv2.THRESH_BINARY)
-
-                with frame_lock:
-                    latest_frame = binaryImage
-
-                # Display frame
-                cv2.imshow("Processed Frame", binaryImage)
-
-            # Frame rate pacing
-            computation_time = time.time() - start_time
-            sleep_time = max(target_frame_time - computation_time, 1e-3)
-            ms_sleep_time = max(int(1000 * sleep_time), 1)
-
-            # Safely handle waitKey in main thread
-            if cv2.waitKey(ms_sleep_time) & 0xFF == ord("q"):
-                is_running = False
+        # The main thread sleeps while camera and control run
+        while is_running:
+            time.sleep(0.5)
 
     except Exception as e:
         print(f"An error occurred in the main thread: {e}")
@@ -310,10 +330,10 @@ else:
         print("Cleaning up resources...")
         is_running = False
 
-        cv2.destroyAllWindows()
-
         if controlThread and controlThread.is_alive():
-            controlThread.join(timeout=2)
+            controlThread.join()
+        if cameraThread and cameraThread.is_alive():
+            cameraThread.join()
 
         if camera:
             camera.terminate()

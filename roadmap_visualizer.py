@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 from PIL import Image
 import custom_roadmap  # Import the module so we can modify its dictionary in memory
 from custom_roadmap import CustomRoadMap
+from hal.utilities.path_planning import RoadMap
 
 # 1. Define the exact node sequence
 nodeSequence = [
@@ -35,7 +36,7 @@ class InteractiveRoadmapTool:
         self.fig.canvas.mpl_connect('button_release_event', self.on_release)
 
     def check_map_health(self, roadmap):
-        """Scans every edge in the roadmap and reports any failures to the terminal."""
+        """Scans every edge in the roadmap and reports failures, plus suggests working radii."""
         print("\n=== EDGE HEALTH REPORT ===")
         failed_count = 0
         
@@ -47,12 +48,39 @@ class InteractiveRoadmapTool:
                 print(f" [FAILED] Edge {from_id} -> {to_id} could not generate geometry!")
                 failed_count += 1
                 
+                # --- NEW: Radius Suggester ---
+                test_radii = np.arange(0.1, 1.55, 0.05)
+                working_radii = []
+                
+                # Grab the exact coordinates of the broken nodes
+                pose1 = edge.fromNode.pose
+                pose2 = edge.toNode.pose
+                
+                for r in test_radii:
+                    # Create a temporary mini-map to test just these two nodes
+                    temp_map = RoadMap()
+                    temp_map.add_node([pose1[0, 0], pose1[1, 0], pose1[2, 0]])
+                    temp_map.add_node([pose2[0, 0], pose2[1, 0], pose2[2, 0]])
+                    temp_map.add_edge(0, 1, r)
+                    
+                    if temp_map.edges[0].waypoints is not None:
+                        working_radii.append(round(r, 2))
+                
+                if working_radii:
+                    min_r = min(working_radii)
+                    max_r = max(working_radii)
+                    mid_r = working_radii[len(working_radii) // 2]
+                    print(f"   -> [SUGGESTION] Valid radii range from {min_r} to {max_r}")
+                    print(f"   -> Try using: {mid_r}")
+                else:
+                    print("   -> [SUGGESTION] No valid radius exists. The nodes must be realigned.")
+                # -----------------------------
+                
         if failed_count == 0:
             print(" [OK] All edges generated perfectly!")
         else:
             print(f" >>> WARNING: {failed_count} edges are broken on the map! <<<")
         print("==========================\n")
-
     def setup_plot(self):
         self.ax.clear()
         self.ax.set_aspect("equal", adjustable="box")

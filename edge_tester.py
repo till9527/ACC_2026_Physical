@@ -38,7 +38,7 @@ K_stanley = 1
 # EDGE TESTER CONFIGURATION:
 # Change these two nodes to test a specific edge trajectory
 # ========================================================
-nodeSequence = [2, 4]
+nodeSequence = [1, 7]
 
 # -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
 
