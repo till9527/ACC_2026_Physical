@@ -9,6 +9,7 @@ and roadmap tracking.
 
 import os
 import signal
+import threading
 import time
 from threading import Lock, Thread
 
@@ -22,6 +23,7 @@ from pit.YOLO.utils import QCar2DepthAligned
 
 # --- QCar Control & Visualization Imports ---
 from hal.content.qcar_functions import QCarEKF
+from pal.utilities.vision import Camera2D
 from pal.products.qcar import IS_PHYSICAL_QCAR, QCar, QCarGPS
 from pal.utilities.math import wrap_to_pi
 from pal.utilities.scope import MultiScope
@@ -33,7 +35,10 @@ from custom_roadmap import CustomRoadMap
 # ============================
 # Experiment Configuration
 # ============================
-
+CAMERA_ID = "2"
+IMAGE_WIDTH = 640
+IMAGE_HEIGHT = 480
+FRAME_RATE = 30
 # Vehicle control timing parameters
 TF = 6000
 START_DELAY = 1.0
@@ -49,6 +54,7 @@ IMAGE_HEIGHT = 480
 V_REF = 0.5
 K_P = 0.1
 K_I = 1.0
+frame_lock = threading.Lock()
 
 # Steering controller parameters
 ENABLE_STEERING_CONTROL = True
@@ -600,18 +606,41 @@ if __name__ == "__main__":
         modelPath="yolov8s-seg.pt", imageHeight=IMAGE_HEIGHT, imageWidth=IMAGE_WIDTH
     )
     qcar_img = QCar2DepthAligned()
-
+    camera = Camera2D(
+            cameraId=CAMERA_ID,
+            frameWidth=IMAGE_WIDTH,
+            frameHeight=IMAGE_HEIGHT,
+            frameRate=FRAME_RATE,
+        )
     # --- 3. START CONTROL THREAD ---
     print("Starting QCar hardware and GPS connection...")
     control_thread = Thread(target=control_loop, daemon=True)
     control_thread.start()
-
+    threshold_value = 115 
+    target_frame_time = 1.0 / FRAME_RATE
     # --- 4. RUN COMBINED MAIN LOOP ---
     print("Experiment started. Press Ctrl+C in terminal to stop.")
     try:
         while control_thread.is_alive() and (not KILL_THREAD):
             start = time.time()
+            if camera.read():
+                # 1. Get raw frame
+                raw_frame = camera.imageData
 
+                # 2. CROP TO LOWER HALF
+                h, w = raw_frame.shape[:2]
+                lower_half_frame = raw_frame[int(h / 2):h, :]
+
+                # 3. CLEAN THRESHOLDING
+                gray = cv2.cvtColor(lower_half_frame, cv2.COLOR_BGR2GRAY)
+                blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+                _, binaryImage = cv2.threshold(blurred, threshold_value, 255, cv2.THRESH_BINARY)
+
+                with frame_lock:
+                    latest_frame = binaryImage
+
+                # Display frame
+                cv2.imshow("Processed Frame", binaryImage)
             # --- Object Detection Block ---
             qcar_img.read()
             rgb_processed_cones = cone_yolo.pre_process(qcar_img.rgb)
