@@ -3,7 +3,7 @@ qcar_yolo_visualized.py
 
 Combined script: runs QCar speed and steering control in a background thread
 while running two YOLOv8 object segmentation models concurrently in the main
-thread. Now includes real-time PyQtGraph MultiScope visualization for telemetry 
+thread. Now includes real-time PyQtGraph MultiScope visualization for telemetry
 and roadmap tracking.
 """
 
@@ -29,7 +29,6 @@ import pal.resources.images as images
 
 # --- Roadmap Imports ---
 from custom_roadmap import CustomRoadMap
-
 
 # ============================
 # Experiment Configuration
@@ -57,7 +56,7 @@ K_STANLEY = 1.0
 NODE_SEQUENCE = [10, 4, 20, 10]
 
 # Object-handling parameters
-STOP_SIGN_MIN_WIDTH = 50 
+STOP_SIGN_MIN_WIDTH = 50
 YIELD_SIGN_MIN_WIDTH = 60
 STOP_SIGN_WAIT_TIME_S = 3.0
 YIELD_SIGN_WAIT_TIME_S = 0.5
@@ -84,14 +83,20 @@ def check_map_health(roadmap):
     """Scans every edge in the roadmap and reports any failures."""
     print("\n=== EDGE HEALTH REPORT ===")
     failed_count = 0
-    
+
     for edge in roadmap.edges:
-        if getattr(edge, 'waypoints', None) is None or len(edge.waypoints) == 0 or len(edge.waypoints[0]) == 0:
+        if (
+            getattr(edge, "waypoints", None) is None
+            or len(edge.waypoints) == 0
+            or len(edge.waypoints[0]) == 0
+        ):
             from_id = roadmap.nodes.index(edge.fromNode)
             to_id = roadmap.nodes.index(edge.toNode)
-            print(f" [FAILED] Edge {from_id} -> {to_id} could not generate geometry! Check radii and node coordinates to avoid curb crossover.")
+            print(
+                f" [FAILED] Edge {from_id} -> {to_id} could not generate geometry! Check radii and node coordinates to avoid curb crossover."
+            )
             failed_count += 1
-            
+
     if failed_count == 0:
         print(" [OK] All edges generated perfectly!")
     else:
@@ -103,10 +108,11 @@ if ENABLE_STEERING_CONTROL:
     custom_roadmap_joe = CustomRoadMap()
     check_map_health(custom_roadmap_joe)
     waypoint_sequence = custom_roadmap_joe.generate_path(NODE_SEQUENCE)
-    
+
     if waypoint_sequence is None:
         print("\n[ERROR] Path generation failed! Tracing NODE_SEQUENCE for errors...")
         import sys
+
         sys.exit(1)
 
     initial_pose = custom_roadmap_joe.get_node_pose(NODE_SEQUENCE[0]).squeeze()
@@ -115,6 +121,7 @@ else:
 
 if not IS_PHYSICAL_QCAR:
     import qlabs_setup
+
     qlabs_setup.setup(
         initialPosition=[initial_pose[0], initial_pose[1], 0],
         initialOrientation=[0, 0, initial_pose[2]],
@@ -129,9 +136,11 @@ KILL_THREAD = False
 latest_detections = []
 detections_lock = Lock()
 
+
 def sig_handler(*_args):
     global KILL_THREAD
     KILL_THREAD = True
+
 
 signal.signal(signal.SIGINT, sig_handler)
 
@@ -181,10 +190,10 @@ class SteeringController:
 
         v_uv = v / v_mag
         tangent = np.arctan2(v_uv[1], v_uv[0])
-        
+
         s = np.dot(p - wp_1, v_uv)
         dist_to_next = np.linalg.norm(p - wp_2)
-        
+
         if s >= v_mag or dist_to_next < 0.1:
             if self.cyclic or self.wpi < self.N - 2:
                 self.wpi += 1
@@ -210,6 +219,7 @@ class SteeringController:
 def normalize_class_name(name):
     return str(name).strip().lower().replace("_", " ").replace("-", " ")
 
+
 def extract_detection_metadata(result):
     detections = []
     if result is None:
@@ -225,18 +235,22 @@ def extract_detection_metadata(result):
 
     for box, class_id in zip(xywh, cls):
         x_center, y_center, width, height = box.tolist()
-        detections.append({
-            "class": names.get(class_id, str(class_id)),
-            "x": float(x_center),
-            "y": float(y_center),
-            "width": float(width),
-            "height": float(height),
-        })
+        detections.append(
+            {
+                "class": names.get(class_id, str(class_id)),
+                "x": float(x_center),
+                "y": float(y_center),
+                "width": float(width),
+                "height": float(height),
+            }
+        )
     return detections
+
 
 def extract_quanser_detection_metadata(results):
     detections = []
-    if results is None: return detections
+    if results is None:
+        return detections
     for obj in results:
         name = str(getattr(obj, "name", "")).strip()
         detection = {
@@ -254,6 +268,7 @@ def extract_quanser_detection_metadata(results):
         detections.append(detection)
     return detections
 
+
 def extract_sign_detection_metadata(result):
     detections = []
     for det in extract_detection_metadata(result):
@@ -263,13 +278,15 @@ def extract_sign_detection_metadata(result):
             detections.append(det)
     return detections
 
+
 def is_orange(image, box_xyxy):
     x1, y1, x2, y2 = map(int, box_xyxy)
     h, w = image.shape[:2]
     x1, y1 = max(0, x1), max(0, y1)
     x2, y2 = min(w, x2), min(h, y2)
     roi = image[y1:y2, x1:x2]
-    if roi.size == 0: return False
+    if roi.size == 0:
+        return False
 
     hsv_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
     lower_crimson = np.array([165, 130, 150])
@@ -290,12 +307,16 @@ def control_loop():
 
     u = 0.0
     delta = 0.0
-    
+
     countMax = CONTROLLER_UPDATE_RATE / 10
     count = 0
 
     speed_controller = SpeedController(kp=K_P, ki=K_I)
-    steering_controller = SteeringController(waypoints=waypoint_sequence, k=K_STANLEY) if ENABLE_STEERING_CONTROL else None
+    steering_controller = (
+        SteeringController(waypoints=waypoint_sequence, k=K_STANLEY)
+        if ENABLE_STEERING_CONTROL
+        else None
+    )
 
     stop_sign_start_time = 0.0
     yield_sign_start_time = 0.0
@@ -330,7 +351,9 @@ def control_loop():
 
             if ENABLE_STEERING_CONTROL:
                 if gps.readGPS():
-                    y_gps = np.array([gps.position[0], gps.position[1], gps.orientation[2]])
+                    y_gps = np.array(
+                        [gps.position[0], gps.position[1], gps.orientation[2]]
+                    )
                     ekf.update([qcar.motorTach, delta], dt, y_gps, qcar.gyroscope[2])
                 else:
                     ekf.update([qcar.motorTach, delta], dt, None, qcar.gyroscope[2])
@@ -354,18 +377,33 @@ def control_loop():
 
             for obj in current_detections:
                 obj_class = normalize_class_name(obj["class"])
-                if obj_class in ("stop sign", "stopsign") and obj["width"] > STOP_SIGN_MIN_WIDTH:
+                if (
+                    obj_class in ("stop sign", "stopsign")
+                    and obj["width"] > STOP_SIGN_MIN_WIDTH
+                ):
                     stop_sign_visible = True
                     stop_sign_last_seen_time = current_time
-                elif obj_class in ("yield sign", "yieldsign") and obj["width"] > YIELD_SIGN_MIN_WIDTH:
+                elif (
+                    obj_class in ("yield sign", "yieldsign")
+                    and obj["width"] > YIELD_SIGN_MIN_WIDTH
+                ):
                     yield_sign_visible = True
                     yield_sign_last_seen_time = current_time
                 elif obj_class in ("traffic light (green )", "traffic light (green)"):
                     green_light_visible = True
-                elif obj_class in ("traffic light (red )", "traffic light (red)", "traffic light (yellow )", "traffic light (yellow)"):
+                elif obj_class in (
+                    "traffic light (red )",
+                    "traffic light (red)",
+                    "traffic light (yellow )",
+                    "traffic light (yellow)",
+                ):
                     red_or_yellow_light_visible = True
                 elif obj_class in ("traffic cone", "traffic-cone"):
-                    if CONE_CENTER_THIRD_MIN_X < obj["x"] < CONE_CENTER_THIRD_MAX_X and obj["height"] > CONE_MIN_HEIGHT and obj["width"] > CONE_MIN_WIDTH:
+                    if (
+                        CONE_CENTER_THIRD_MIN_X < obj["x"] < CONE_CENTER_THIRD_MAX_X
+                        and obj["height"] > CONE_MIN_HEIGHT
+                        and obj["width"] > CONE_MIN_WIDTH
+                    ):
                         cone_detected_center = True
 
             should_stop = red_or_yellow_light_visible
@@ -379,7 +417,10 @@ def control_loop():
                 elif current_time - yield_sign_start_time > YIELD_SIGN_WAIT_TIME_S:
                     is_stopped_for_yield = True
                     yield_sign_start_time = 0.0
-            elif not yield_sign_visible and current_time - yield_sign_last_seen_time > SIGN_REARM_TIME_S:
+            elif (
+                not yield_sign_visible
+                and current_time - yield_sign_last_seen_time > SIGN_REARM_TIME_S
+            ):
                 yield_sign_start_time = 0.0
                 is_stopped_for_yield = False
 
@@ -390,11 +431,18 @@ def control_loop():
                 elif current_time - stop_sign_start_time > STOP_SIGN_WAIT_TIME_S:
                     is_stopped_for_sign = True
                     stop_sign_start_time = 0.0
-            elif not stop_sign_visible and current_time - stop_sign_last_seen_time > SIGN_REARM_TIME_S:
+            elif (
+                not stop_sign_visible
+                and current_time - stop_sign_last_seen_time > SIGN_REARM_TIME_S
+            ):
                 stop_sign_start_time = 0.0
                 is_stopped_for_sign = False
 
-            if cone_detected_center and (not cone_avoid_active) and current_time >= cone_avoid_cooldown_until:
+            if (
+                cone_detected_center
+                and (not cone_avoid_active)
+                and current_time >= cone_avoid_cooldown_until
+            ):
                 cone_avoid_active = True
                 cone_avoid_start_time = current_time
 
@@ -421,33 +469,41 @@ def control_loop():
             else:
                 u = speed_controller.update(v, target_speed, dt)
                 if ENABLE_STEERING_CONTROL and steering_controller is not None:
-                    delta = cone_avoid_steer if cone_avoid_active else steering_controller.update(p, th, v)
+                    delta = (
+                        cone_avoid_steer
+                        if cone_avoid_active
+                        else steering_controller.update(p, th, v)
+                    )
                 else:
                     delta = 0.0
 
             qcar.write(u, delta)
 
-            # Update PyQt Scopes 
+            # Update PyQt Scopes
             count += 1
             if count >= countMax and t > START_DELAY:
                 t_plot = t - START_DELAY
 
                 # Dynamic plotting of target speed vs actual
-                speedScope.axes[0].sample(t_plot, [v, target_speed])
-                speedScope.axes[1].sample(t_plot, [target_speed - v])
-                speedScope.axes[2].sample(t_plot, [u])
+                # speedScope.axes[0].sample(t_plot, [v, target_speed])
+                # speedScope.axes[1].sample(t_plot, [target_speed - v])
+                # speedScope.axes[2].sample(t_plot, [u])
 
                 if ENABLE_STEERING_CONTROL:
-                    steeringScope.axes[4].sample(t_plot, [[p[0], p[1]]])
+                    steeringScope.axes[0].sample(t_plot, [[p[0], p[1]]])
 
-                    x_ref = steering_controller.p_ref[0] if steering_controller else p[0]
-                    y_ref = steering_controller.p_ref[1] if steering_controller else p[1]
+                    x_ref = (
+                        steering_controller.p_ref[0] if steering_controller else p[0]
+                    )
+                    y_ref = (
+                        steering_controller.p_ref[1] if steering_controller else p[1]
+                    )
                     th_ref = steering_controller.th_ref if steering_controller else th
 
-                    steeringScope.axes[0].sample(t_plot, [p[0], x_ref])
-                    steeringScope.axes[1].sample(t_plot, [p[1], y_ref])
-                    steeringScope.axes[2].sample(t_plot, [th, th_ref])
-                    steeringScope.axes[3].sample(t_plot, [delta])
+                    # steeringScope.axes[0].sample(t_plot, [p[0], x_ref])
+                    # steeringScope.axes[1].sample(t_plot, [p[1], y_ref])
+                    # steeringScope.axes[2].sample(t_plot, [th, th_ref])
+                    # steeringScope.axes[3].sample(t_plot, [delta])
 
                     arrow.setPos(p[0], p[1])
                     arrow.setStyle(angle=180 - th * 180 / np.pi)
@@ -461,59 +517,88 @@ def control_loop():
 # Main experiment loop
 # ============================
 if __name__ == "__main__":
-    
+
     # --- 1. SETUP SCOPES ---
     fps = 10 if IS_PHYSICAL_QCAR else 30
-    
-    speedScope = MultiScope(rows=3, cols=1, title="Vehicle Speed Control", fps=fps)
-    speedScope.addAxis(row=0, col=0, timeWindow=TF, yLabel="Vehicle Speed [m/s]", yLim=(0, 1))
-    speedScope.axes[0].attachSignal(name="v_meas", width=2)
-    speedScope.axes[0].attachSignal(name="target_speed")
-    
-    speedScope.addAxis(row=1, col=0, timeWindow=TF, yLabel="Speed Error [m/s]", yLim=(-0.5, 0.5))
-    speedScope.axes[1].attachSignal()
-    
-    speedScope.addAxis(row=2, col=0, timeWindow=TF, xLabel="Time [s]", yLabel="Throttle Command [%]", yLim=(-0.3, 0.3))
-    speedScope.axes[2].attachSignal()
+
+    # speedScope = MultiScope(rows=3, cols=1, title="Vehicle Speed Control", fps=fps)
+    # speedScope.addAxis(row=0, col=0, timeWindow=TF, yLabel="Vehicle Speed [m/s]", yLim=(0, 1))
+    # speedScope.axes[0].attachSignal(name="v_meas", width=2)
+    # speedScope.axes[0].attachSignal(name="target_speed")
+
+    # speedScope.addAxis(row=1, col=0, timeWindow=TF, yLabel="Speed Error [m/s]", yLim=(-0.5, 0.5))
+    # speedScope.axes[1].attachSignal()
+
+    # speedScope.addAxis(row=2, col=0, timeWindow=TF, xLabel="Time [s]", yLabel="Throttle Command [%]", yLim=(-0.3, 0.3))
+    # speedScope.axes[2].attachSignal()
 
     if ENABLE_STEERING_CONTROL:
-        steeringScope = MultiScope(rows=4, cols=2, title="Vehicle Steering Control", fps=fps)
+        steeringScope = MultiScope(
+            rows=4, cols=2, title="Vehicle Steering Control", fps=fps
+        )
 
-        steeringScope.addAxis(row=0, col=0, timeWindow=TF, yLabel="x Position [m]", yLim=(-2.5, 2.5))
-        steeringScope.axes[0].attachSignal(name="x_meas")
-        steeringScope.axes[0].attachSignal(name="x_ref")
+        # steeringScope.addAxis(row=0, col=0, timeWindow=TF, yLabel="x Position [m]", yLim=(-2.5, 2.5))
+        # steeringScope.axes[0].attachSignal(name="x_meas")
+        # steeringScope.axes[0].attachSignal(name="x_ref")
 
-        steeringScope.addAxis(row=1, col=0, timeWindow=TF, yLabel="y Position [m]", yLim=(-1, 5))
-        steeringScope.axes[1].attachSignal(name="y_meas")
-        steeringScope.axes[1].attachSignal(name="y_ref")
+        # steeringScope.addAxis(row=1, col=0, timeWindow=TF, yLabel="y Position [m]", yLim=(-1, 5))
+        # steeringScope.axes[1].attachSignal(name="y_meas")
+        # steeringScope.axes[1].attachSignal(name="y_ref")
 
-        steeringScope.addAxis(row=2, col=0, timeWindow=TF, yLabel="Heading Angle [rad]", yLim=(-3.5, 3.5))
-        steeringScope.axes[2].attachSignal(name="th_meas")
-        steeringScope.axes[2].attachSignal(name="th_ref")
+        # steeringScope.addAxis(row=2, col=0, timeWindow=TF, yLabel="Heading Angle [rad]", yLim=(-3.5, 3.5))
+        # steeringScope.axes[2].attachSignal(name="th_meas")
+        # steeringScope.axes[2].attachSignal(name="th_ref")
 
-        steeringScope.addAxis(row=3, col=0, timeWindow=TF, yLabel="Steering Angle [rad]", yLim=(-0.6, 0.6))
-        steeringScope.axes[3].attachSignal()
-        steeringScope.axes[3].xLabel = "Time [s]"
+        # steeringScope.addAxis(row=3, col=0, timeWindow=TF, yLabel="Steering Angle [rad]", yLim=(-0.6, 0.6))
+        # steeringScope.axes[3].attachSignal()
+        # steeringScope.axes[3].xLabel = "Time [s]"
 
-        steeringScope.addXYAxis(row=0, col=1, rowSpan=4, xLabel="x Position [m]", yLabel="y Position [m]", xLim=(-2.5, 2.5), yLim=(-1, 5))
-
+        steeringScope.addXYAxis(
+            row=0,
+            col=1,
+            rowSpan=4,
+            xLabel="x Position [m]",
+            yLabel="y Position [m]",
+            xLim=(-2.5, 2.5),
+            yLim=(-1, 5),
+        )
+        steeringScope.axes[0].plot.setAspectLocked(True)
         im = cv2.imread(images.SDCS_CITYSCAPE, cv2.IMREAD_GRAYSCALE)
-        steeringScope.axes[4].attachImage(scale=(-0.002035, 0.002035), offset=(1125, 2365), rotation=180, levels=(0, 255))
-        steeringScope.axes[4].images[0].setImage(image=im)
+        steeringScope.axes[0].attachImage(
+            scale=(-0.002035, 0.002035),
+            offset=(1125, 2365),
+            rotation=180,
+            levels=(0, 255),
+        )
+        steeringScope.axes[0].images[0].setImage(image=im)
 
-        referencePath = pg.PlotDataItem(pen={"color": (85, 168, 104), "width": 2}, name="Reference")
-        steeringScope.axes[4].plot.addItem(referencePath)
+        referencePath = pg.PlotDataItem(
+            pen={"color": (85, 168, 104), "width": 2}, name="Reference"
+        )
+        steeringScope.axes[0].plot.addItem(referencePath)
         referencePath.setData(waypoint_sequence[0, :], waypoint_sequence[1, :])
-        steeringScope.axes[4].attachSignal(name="Estimated", width=2)
+        steeringScope.axes[0].attachSignal(name="Estimated", width=2)
 
-        arrow = pg.ArrowItem(angle=180, tipAngle=60, headLen=10, tailLen=10, tailWidth=5, pen={"color": "w", "fillColor": [196, 78, 82], "width": 1}, brush=[196, 78, 82])
+        arrow = pg.ArrowItem(
+            angle=180,
+            tipAngle=60,
+            headLen=10,
+            tailLen=10,
+            tailWidth=5,
+            pen={"color": "w", "fillColor": [196, 78, 82], "width": 1},
+            brush=[196, 78, 82],
+        )
         arrow.setPos(initial_pose[0], initial_pose[1])
-        steeringScope.axes[4].plot.addItem(arrow)
+        steeringScope.axes[0].plot.addItem(arrow)
 
     # --- 2. START YOLO MODELS ---
     print("Loading YOLO models and warming up TensorRT... please wait.")
-    cone_yolo = YOLOv8(modelPath="traffic_cones.pt", imageHeight=IMAGE_HEIGHT, imageWidth=IMAGE_WIDTH)
-    seg_yolo = YOLOv8(modelPath="yolov8s-seg.pt", imageHeight=IMAGE_HEIGHT, imageWidth=IMAGE_WIDTH)
+    cone_yolo = YOLOv8(
+        modelPath="traffic_cones.pt", imageHeight=IMAGE_HEIGHT, imageWidth=IMAGE_WIDTH
+    )
+    seg_yolo = YOLOv8(
+        modelPath="yolov8s-seg.pt", imageHeight=IMAGE_HEIGHT, imageWidth=IMAGE_WIDTH
+    )
     qcar_img = QCar2DepthAligned()
 
     # --- 3. START CONTROL THREAD ---
@@ -526,20 +611,36 @@ if __name__ == "__main__":
     try:
         while control_thread.is_alive() and (not KILL_THREAD):
             start = time.time()
-            
+
             # --- Object Detection Block ---
             qcar_img.read()
             rgb_processed_cones = cone_yolo.pre_process(qcar_img.rgb)
-            prediction_cones = cone_yolo.predict(inputImg=rgb_processed_cones, classes=[0], confidence=0.05, half=True, verbose=False)
-            res_cones = prediction_cones[0] if isinstance(prediction_cones, list) else prediction_cones
-            raw_results_cones = cone_yolo.post_processing(alignedDepth=qcar_img.depth, clippingDistance=5)
+            prediction_cones = cone_yolo.predict(
+                inputImg=rgb_processed_cones,
+                classes=[0],
+                confidence=0.05,
+                half=True,
+                verbose=False,
+            )
+            res_cones = (
+                prediction_cones[0]
+                if isinstance(prediction_cones, list)
+                else prediction_cones
+            )
+            raw_results_cones = cone_yolo.post_processing(
+                alignedDepth=qcar_img.depth, clippingDistance=5
+            )
 
             keep_indices = []
             filtered_res_cones = None
             results_cones = []
             filtered_cone_metadata = []
 
-            if res_cones is not None and res_cones.boxes is not None and len(res_cones.boxes) > 0:
+            if (
+                res_cones is not None
+                and res_cones.boxes is not None
+                and len(res_cones.boxes) > 0
+            ):
                 cone_metadata = extract_detection_metadata(res_cones)
                 for i, box in enumerate(res_cones.boxes.xyxy.cpu().numpy()):
                     if is_orange(rgb_processed_cones, box):
@@ -554,13 +655,23 @@ if __name__ == "__main__":
                             results_cones.append(raw_results_cones[i])
 
             rgb_processed_seg = seg_yolo.pre_process(qcar_img.rgb)
-            prediction_seg = seg_yolo.predict(inputImg=rgb_processed_seg, confidence=0.3, half=True, verbose=False)
-            res_seg = prediction_seg[0] if isinstance(prediction_seg, list) else prediction_seg
-            results_seg = seg_yolo.post_processing(alignedDepth=qcar_img.depth, clippingDistance=5)
+            prediction_seg = seg_yolo.predict(
+                inputImg=rgb_processed_seg, confidence=0.3, half=True, verbose=False
+            )
+            res_seg = (
+                prediction_seg[0]
+                if isinstance(prediction_seg, list)
+                else prediction_seg
+            )
+            results_seg = seg_yolo.post_processing(
+                alignedDepth=qcar_img.depth, clippingDistance=5
+            )
 
             sign_metadata = extract_sign_detection_metadata(res_seg)
             traffic_light_metadata = extract_quanser_detection_metadata(results_seg)
-            combined_metadata = filtered_cone_metadata + sign_metadata + traffic_light_metadata
+            combined_metadata = (
+                filtered_cone_metadata + sign_metadata + traffic_light_metadata
+            )
 
             with detections_lock:
                 latest_detections.clear()
@@ -569,7 +680,7 @@ if __name__ == "__main__":
             combined_img = seg_yolo.post_process_render(showFPS=True)
             if filtered_res_cones is not None and len(filtered_res_cones) > 0:
                 combined_img = filtered_res_cones.plot(img=combined_img)
-            
+
             cv2.imshow("Object Segmentation", combined_img)
 
             # --- Qt Interface Refresh Block ---
@@ -580,7 +691,7 @@ if __name__ == "__main__":
             computation_time = end - start
             sleep_time = max(SAMPLE_TIME - (computation_time % SAMPLE_TIME), 1e-3)
             ms_sleep_time = max(int(1000 * sleep_time), 1)
-            
+
             cv2.waitKey(ms_sleep_time)
 
     except KeyboardInterrupt:
@@ -592,6 +703,7 @@ if __name__ == "__main__":
 
         if not IS_PHYSICAL_QCAR:
             import qlabs_setup
+
             qlabs_setup.terminate()
 
         if control_thread.is_alive():
